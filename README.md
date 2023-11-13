@@ -35,7 +35,7 @@ wget https://warmplace.ru/soft/sunvox/sunvox_lib-2.1.1.zip
 unzip sunvox_lib-2.1.1.zip
 ```
 
-You can grab sunvox\_lib yourself and make symlinks instead of cloning those repos. If you add you
+You can grab sunvox\_lib yourself and make symlinks instead of cloning those repos.
 
 ## building without audio
 
