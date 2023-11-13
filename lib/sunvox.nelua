@@ -1,0 +1,44 @@
+local ffi = require 'ffi'
+
+##[[
+local prefix = './'
+if ccinfo.is_linux then
+  if ccinfo.is_x86_64 then prefix = 'sunvox_lib/linux/lib_x86_64/'
+  elseif ccinfo.is_x86 then prefix = 'sunvox_lib/linux/lib_x86/'
+  elseif ccinfo.is_arm64 then prefix = 'sunvox_lib/linux/lib_arm64/'
+  elseif ccinfo.is_arm then prefix = 'sunvox_lib/linux/lib_arm/'
+  end
+end
+]]
+
+local sunvox = @record{
+  lib: ffi,
+  init: function(config: cstring, freq: cint, channels: cint, flags: uint32): cint,
+  deinit: function(): cint,
+  open_slot: function(slot: cint): cint,
+  close_slot: function(slot: cint): cint,
+  load: function(slot: cint, name: cstring): cint,
+  volume: function(slot: cint, vol: cint): cint,
+  get_song_name: function(slot: cint): cstring,
+  play_from_beginning: function(slot: cint): cint,
+  find_module: function(slot: cint, name: cstring): cint,
+  send_event: function(slot: cint, track_num: cint, note: cint, vel: cint, module: cint, ctl: cint, ctl_val: cint): cint,
+  pause: function(slot: cint): cint,
+  resume: function(slot: cint): cint,
+}
+function sunvox.load(): sunvox
+  local self: sunvox
+  self.lib = ffi.load(#[prefix..'sunvox.so']#)
+  ## for _, field in ipairs(sunvox.value.fields) do
+  ##   local name = field.name
+  ##   if name ~= 'lib' then
+  self.#|name|# = (@#[sunvox.value.fields[name].type]#)(self.lib:get(#['sv_' .. name]#))
+  ##   end
+  ## end
+  return self
+end
+
+function sunvox:unload() self.lib:unload() end
+function sunvox:__close() self:unload() end
+
+return sunvox

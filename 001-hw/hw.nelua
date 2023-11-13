@@ -1,0 +1,14 @@
+## pragmas.unitname = 'hw'
+require 'raylib'
+
+rl.setConfigFlags(rl.configFlags.VSYNC_HINT)
+rl.initWindow(400, 400, "Hello, Raylib!")
+defer rl.closeWindow() end
+
+repeat
+  rl.beginDrawing()
+  rl.clearBackground(rl.BLACK)
+  rl.drawText("Hello, world!", 200, 200, 28, rl.RAYWHITE)
+  rl.drawText("Hello, world!", 200, 300, 28, rl.RED)
+  rl.endDrawing()
+until rl.windowShouldClose()

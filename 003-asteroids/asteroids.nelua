@@ -1,0 +1,398 @@
+## pragmas.unitname = 'asteroids'
+require 'raylib'
+## print(unitname)
+## if pragmas.audio then
+  local sunvox = require 'sunvox'
+
+  local sv <close> = sunvox.load()
+  assert(sv.lib.handle, 'failed to load sunvox.so')
+  assert(sv.init('', 44100, 2, 0) >= 0, 'failed to init sunvox')
+  defer sv.deinit() end
+  sv.open_slot(0)
+  defer sv.close_slot(0) end
+  assert(sv.load(0, 'lib/asteroids.sunvox') == 0, 'failed to load background music')
+  print('loaded bgm:', sv.get_song_name(0))
+
+  local Note = @enum{C = 0, Cs, D, Ds, E, F, Fs, G, Gs, A, As, B}
+  local function note(note: Note, octave: cint): cint
+    return octave * 12 + 2 + note
+  end
+
+  local DrumSynth <const> = sv.find_module(0, 'DrumSynth2')
+  assert(DrumSynth >= 0)
+  local ShootNote <const> = note(Note.C, 9)
+  local BreakNote <const> = note(Note.Gs, 7)
+
+  local function kicksound() sv.send_event(0, 0, ShootNote, 129, DrumSynth + 1, 0, 0) end
+  local function breaksound() sv.send_event(0, 0, BreakNote, 129, DrumSynth + 1, 0, 0) end
+## end
+
+## local function inc(var, by)
+  #[var]# = #[var]# + #[by or 1]#
+## end
+
+## local function dec(var, by)
+  #[var]# = #[var]# - #[by or 1]#
+## end
+
+local Player = @record{
+  position:     rl.vector2,
+  speed:        rl.vector2,
+  acceleration: float32,
+  rotation:     float32,
+  collider:     [3]float32,
+}
+function Player:collider_xy(): rl.vector2 return {self.collider[0], self.collider[1]} end
+function Player:collider_z() return self.collider[2] end
+local Meteor = @record{
+  position:     rl.vector2,
+  speed:        rl.vector2,
+  radius:       float32,
+  active:       boolean,
+}
+local Shoot = @record{
+  position:     rl.vector2,
+  speed:        rl.vector2,
+  radius:       float32,
+  active:       boolean,
+  rotation:     float32,
+  lifeSpawn:    integer,
+}
+
+local PLAYER_BASE_SIZE <comptime> = 20.0
+local PLAYER_SPEED     <comptime> = 6.0
+local METEORS_SPEED    <comptime> = 2
+local screenWidth      <comptime> = 800
+local screenHeight     <comptime> = 450
+
+local gameOver: boolean
+local pause:    boolean
+local victory:  boolean
+local shipHeight: float32 <const> = (PLAYER_BASE_SIZE / 2) / math.tan(20 * rl.DEG2RAD)
+
+local player: Player
+local mediumMeteorsCount:    integer
+local smallMeteorsCount:     integer
+local destroyedMeteorsCount: integer
+local shoot:        [10]Shoot
+local bigMeteor:    [4]Meteor
+local mediumMeteor: [8]Meteor
+local smallMeteor:  [16]Meteor
+
+local function InitGame()
+  victory = false
+  pause = false
+
+  -- Initialize player
+  player = {}
+  player.position = {screenWidth/2, screenHeight/2 - shipHeight/2}
+  player.collider = {
+    player.position.x + math.sin(player.rotation * rl.DEG2RAD) * shipHeight/2.5,
+    player.position.y - math.cos(player.rotation * rl.DEG2RAD) * shipHeight/2.5,
+    12,
+  }
+
+  shoot = {}
+
+  destroyedMeteorsCount = 0
+
+  for i=0, #bigMeteor-1 do
+    local posx: int32, posy: int32
+    repeat posx = rl.getRandomValue(0, screenWidth)
+    until not (posx > screenWidth/2 - 150 and posx < screenWidth / 2 + 150)
+    repeat posy = rl.getRandomValue(0, screenHeight)
+    until not (posy > screenHeight/2 - 150 and posy < screenHeight / 2 + 150)
+    bigMeteor[i].position = {posx, posy}
+
+    local velx: int32, vely: int32
+    repeat
+      velx = rl.getRandomValue(-METEORS_SPEED, METEORS_SPEED)
+      vely = rl.getRandomValue(-METEORS_SPEED, METEORS_SPEED)
+    until velx ~= 0 and vely ~= 0
+    bigMeteor[i].speed = {velx, vely}
+
+    bigMeteor[i].radius = 40
+    bigMeteor[i].active = true
+  end
+
+  for i=0, #mediumMeteor-1 do
+     mediumMeteor[i].position = {-100, -100}
+     mediumMeteor[i].speed = {}
+     mediumMeteor[i].radius = 20
+     mediumMeteor[i].active = false
+  end
+
+  for i=0, #smallMeteor-1 do
+     smallMeteor[i].position = {-100, -100}
+     smallMeteor[i].speed = {}
+     smallMeteor[i].radius = 10
+     smallMeteor[i].active = false
+  end
+
+  mediumMeteorsCount = 0
+  smallMeteorsCount = 0
+  ## if pragmas.audio then
+  sv.volume(0, 256/2)
+  ## end
+end
+
+local function UpdateGame()
+  if gameOver then
+    if rl.isKeyPressed(rl.keyboardKey.ENTER) then
+      InitGame()
+      gameOver = false
+    end
+    return
+  end
+
+  if rl.isKeyPressed(rl.keyboardKey.P) then
+    pause = not pause
+    ## if pragmas.audio then
+    if pause then sv.pause(0) else sv.resume(0) end
+    ## end
+  end
+  if pause then return end
+
+  if rl.isKeyDown(rl.keyboardKey.LEFT)  then dec!(player.rotation, 5) end
+  if rl.isKeyDown(rl.keyboardKey.RIGHT) then inc!(player.rotation, 5) end
+
+  player.speed.x = math.sin(player.rotation * rl.DEG2RAD) * PLAYER_SPEED
+  player.speed.y = math.cos(player.rotation * rl.DEG2RAD) * PLAYER_SPEED
+
+  if rl.isKeyDown(rl.keyboardKey.UP) then
+    if player.acceleration < 1 then
+      inc!(player.acceleration, 0.04)
+    end
+  else
+    if player.acceleration > 0 then
+      dec!(player.acceleration, 0.02)
+    elseif player.acceleration < 0 then
+      player.acceleration = 0
+    end
+  end
+
+  if rl.isKeyDown(rl.keyboardKey.DOWN) then
+    if player.acceleration > 0 then
+      dec!(player.acceleration, 0.04)
+    elseif player.acceleration < 0 then
+      player.acceleration = 0
+    end
+  end
+
+  -- Player logic: movement
+  inc!(player.position.x, player.speed.x * player.acceleration)
+  dec!(player.position.y, player.speed.y * player.acceleration)
+
+  -- Collision logic: player vs. walls
+  if player.position.x > screenWidth + shipHeight then
+    player.position.x = -shipHeight
+  elseif player.position.x < -shipHeight then
+    player.position.x = screenWidth + shipHeight
+  end
+  if player.position.y > screenHeight + shipHeight then
+    player.position.y = -shipHeight
+  elseif player.position.y < -shipHeight then
+    player.position.y = screenHeight + shipHeight
+  end
+
+  -- Player shoot logic
+  if rl.isKeyPressed(rl.keyboardKey.SPACE) then
+    for i=0, #shoot-1 do
+      if shoot[i].active then continue end
+      shoot[i] = {
+        position = {
+          player.position.x + math.sin(player.rotation * rl.DEG2RAD) * shipHeight,
+          player.position.y - math.cos(player.rotation * rl.DEG2RAD) * shipHeight,
+        },
+        speed = {
+          1.5 * math.sin(player.rotation * rl.DEG2RAD) * PLAYER_SPEED,
+          1.5 * math.cos(player.rotation * rl.DEG2RAD) * PLAYER_SPEED,
+        },
+        radius    = 2,
+        active    = true,
+        rotation  = player.rotation,
+        lifeSpawn = 0,
+      }
+      kicksound()
+      break
+    end
+  end
+
+  -- Shot logic
+  for i=0, #shoot-1 do
+    if not shoot[i].active then continue end
+    -- Shoot life timer
+    inc!(shoot[i].lifeSpawn)
+
+    -- Movement
+    inc!(shoot[i].position.x, shoot[i].speed.x)
+    dec!(shoot[i].position.y, shoot[i].speed.y)
+
+    -- Collision logic: shoot vs. walls
+    if shoot[i].position.x > screenWidth + shoot[i].radius or
+       shoot[i].position.x < 0 - shoot[i].radius or
+       shoot[i].position.y > screenHeight + shoot[i].radius or
+       shoot[i].position.y < 0 - shoot[i].radius or
+       shoot[i].lifeSpawn >= 60 then
+      shoot[i].active = false
+    end
+  end
+
+  -- Collision logic: player vs. meteors
+  player.collider = {
+    player.position.x + math.sin(player.rotation * rl.DEG2RAD) * (shipHeight / 2.5),
+    player.position.y - math.cos(player.rotation * rl.DEG2RAD) * (shipHeight / 2.5),
+    12,
+  }
+
+  ## for size in string.gmatch('big medium small', '%S+') do
+    local meteor = &#|size .. 'Meteor'|#
+    for i=0, # meteor-1 do
+      if not meteor[i].active then continue end
+      if rl.checkCollisionCircles(player:collider_xy(), player:collider_z(), meteor[i].position, meteor[i].radius) then
+        gameOver = true
+      end
+
+      -- Movement
+      inc!(meteor[i].position, meteor[i].speed)
+
+      -- Collision logic: meteor vs. wall
+      if meteor[i].position.x > screenWidth + meteor[i].radius then
+        meteor[i].position.x = -meteor[i].radius
+      elseif meteor[i].position.x < 0 - meteor[i].radius then
+        meteor[i].position.x = screenWidth + meteor[i].radius
+      end
+      if meteor[i].position.y > screenHeight + meteor[i].radius then
+        meteor[i].position.y = -meteor[i].radius
+      elseif meteor[i].position.y < 0 - meteor[i].radius then
+        meteor[i].position.y = screenHeight + meteor[i].radius
+      end
+    end
+  ## end
+
+  -- Collision logic: player-shoots vs. meteors
+  for i=0, #shoot-1 do
+    ## for size, nextsize in string.gmatch('big:medium medium:small', '(%S+):(%S+)') do
+      local meteor = &#|size .. 'Meteor'|#
+      local smaller = &#|nextsize .. 'Meteor'|#
+      ## local nextcount = nextsize .. 'MeteorsCount'
+      if not shoot[i].active then continue end
+      for a=0, #meteor-1 do
+        if meteor[a].active and rl.checkCollisionCircles(shoot[i].position, shoot[i].radius, meteor[a].position, meteor[a].radius) then
+          shoot[i].active = false
+          meteor[a].active = false
+          inc!(destroyedMeteorsCount)
+
+          for j=0, 1 do
+            if #|nextcount|# % 2 == 0 then
+              smaller[#|nextcount|#].position = meteor[a].position
+              smaller[#|nextcount|#].speed = {
+                math.cos(shoot[i].rotation * rl.DEG2RAD) * METEORS_SPEED * -1,
+                math.sin(shoot[i].rotation * rl.DEG2RAD) * METEORS_SPEED * -1,
+              }
+            else
+              smaller[#|nextcount|#].position = meteor[a].position
+              smaller[#|nextcount|#].speed = {
+                math.cos(shoot[i].rotation * rl.DEG2RAD) * METEORS_SPEED,
+                math.sin(shoot[i].rotation * rl.DEG2RAD) * METEORS_SPEED,
+              }
+            end
+            smaller[#|nextcount|#].active = true
+            inc!(#|nextcount|#)
+          end
+          --meteor[a].position = {-100, -100}
+          breaksound()
+          break
+        end
+      end
+    ## end
+
+    for c=0, #smallMeteor-1 do
+      if not smallMeteor[c].active then continue end
+      if rl.checkCollisionCircles(shoot[i].position, shoot[i].radius, smallMeteor[c].position, smallMeteor[c].radius) then
+        shoot[i].active = false
+        smallMeteor[c].active = false
+        inc!(destroyedMeteorsCount)
+        --smallMeteor[a].position = {-100, -100}
+        breaksound()
+        break
+      end
+    end
+  end
+
+  if destroyedMeteorsCount == #bigMeteor + #mediumMeteor + #smallMeteor then
+    victory = true
+  end
+end
+
+local function DrawGame()
+  rl.beginDrawing()
+  defer rl.endDrawing() end
+  rl.clearBackground(rl.RAYWHITE)
+  rl.drawFPS(0, 0)
+  if gameOver then
+    local msg = 'PRESS [ENTER] TO PLAY AGAIN'
+    rl.drawText(msg,
+      rl.getScreenWidth()/2 - rl.measureText(msg, 20)/2,
+      rl.getScreenHeight()/2 - 50,
+      20,
+      rl.GRAY)
+    ## if pragmas.audio then
+    sv.volume(0, 256//7)
+    ## end
+    return
+  end
+
+  -- Draw spaceship
+  local v1: rl.vector2 = {
+    player.position.x + math.sin(player.rotation * rl.DEG2RAD) * shipHeight,
+    player.position.y - math.cos(player.rotation * rl.DEG2RAD) * shipHeight,
+  }
+  local v2: rl.vector2 = {
+    player.position.x - math.cos(player.rotation * rl.DEG2RAD) * PLAYER_BASE_SIZE / 2,
+    player.position.y - math.sin(player.rotation * rl.DEG2RAD) * PLAYER_BASE_SIZE / 2,
+  }
+  local v3: rl.vector2 = {
+    player.position.x + math.cos(player.rotation * rl.DEG2RAD) * PLAYER_BASE_SIZE / 2,
+    player.position.y + math.sin(player.rotation * rl.DEG2RAD) * PLAYER_BASE_SIZE / 2,
+  }
+  rl.drawTriangle(v1, v2, v3, rl.RED)
+
+  -- Draw meteors
+  ## for size in string.gmatch('big medium small', '%S+') do
+    local meteor = &#|size .. 'Meteor'|#
+    for i=0, #meteor-1 do
+      if meteor[i].active then
+        rl.drawCircleV(meteor[i].position, meteor[i].radius, rl.DARKGRAY)
+      else
+        ## if size == 'small' then
+          rl.drawCircleV(meteor[i].position, meteor[i].radius, rl.fade(rl.LIGHTGRAY, 0.3))
+        ## end
+      end
+    end
+  ## end
+
+  -- Draw shoot
+  for i=0, #shoot-1 do
+    if shoot[i].active then rl.drawCircleV(shoot[i].position, shoot[i].radius, rl.BLACK) end
+  end
+
+  if victory then rl.drawText('VICTORY', screenWidth / 2 - rl.measureText('VICTORY', 20) / 2, screenHeight / 2, 20, rl.LIGHTGRAY) end
+  if pause then rl.drawText('GAME PAUSED', screenWidth / 2 - rl.measureText('GAME PAUSED', 40) / 2, screenHeight / 2 - 40, 40, rl.GRAY) end
+end
+
+-- init graphics
+rl.setTargetFPS(60)
+rl.initWindow(screenWidth, screenHeight, 'classic game: asteroids')
+defer rl.closeWindow() end
+
+InitGame()
+
+-- start playing
+## if pragmas.audio then
+sv.play_from_beginning(0)
+## end
+repeat
+  UpdateGame()
+  DrawGame()
+until rl.windowShouldClose()
